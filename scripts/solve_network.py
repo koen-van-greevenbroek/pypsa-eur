@@ -210,36 +210,62 @@ def add_SAFE_constraints(n, config):
     define_constraints(n, lhs, '>=', rhs, 'Safe', 'mintotalcap')
 
 
-def add_store_resolution_constraints(n, h):
-    """Add constraints to change the time resolution of storage.
+def add_time_agg_constraints(n, h, time_agg_config):
+    """
+    Add constraints to reduce the time resolution of some technologies to `h`
+    hours (corresponding to the `nHSUB` wildcard).
 
-    Introduce constraints which essentially make storage in the
-    network n run at a time resolution of h hours. In particular, all
-    decision variables related to storage within h hour intervals are
-    set equal.
+    The impacted technologies are given in the `time_agg_config` dictionary.
 
-    Parameters:
-    n: a PyPSA Network.
-    h: an integer; the new time resolution of storage in hours.
+    Parameters
+    ----------
+    n : pypsa.Network
+    h : int
+        The new time resolution for the given technologies.
+    time_agg_config : dict
+        A configuration dictionary giving the technologies whose operations to
+        aggregate.
     """
 
-    logger.info("Adding constraints to change the time resolution of storage.")
+    techs = time_agg_config['aggregate_uniform']
 
-    # First, aggregate H2 storage uniformly to h hour resolution.
-    store_link_carriers = ['H2 electrolysis', 'H2 fuel cell']
+    logger.info(f"Adding constraints to reduce time resolution of {techs} to\
+                {h} hours.")
+
     h_hour_bins = uniform_snapshot_bins(n, h)
+    # TODO: Add all the constraints all in one go.
     for snapshots in h_hour_bins.values():
-        aggregate_links_p(n, snapshots, store_link_carriers)
+        aggregate_links_p(n, snapshots, techs)
 
-    # Now, aggregate battery charging at night.
-    night_bins = night_snapshot_bins(n)
-    for snapshots in night_bins.values():
-        aggregate_links_p(n, snapshots, ["battery charger"])
 
-    # Finally, aggregate battery discharging during the day.
-    day_bins = day_snapshot_bins(n)
+def add_day_night_constraints(n, time_agg_config):
+    """
+    Add constraints to aggregate the operations of certain
+    technologies during the day and night, as specified in the
+    `time_aggregation` section of the config file.
+
+    Parameters
+    ----------
+    n : pypsa.Network
+    time_agg_config : dict
+    """
+    times = time_agg_config['time_boundaries']
+
+    # Aggregate day time operations.
+    start, end = times['day_start'], times['day_end']
+    day_bins = day_snapshot_bins(n, start, end)
+    day_techs = time_agg_config['aggregate_day']
+    # TODO: need to add all constrainsts in one go.
     for snapshots in day_bins.values():
-        aggregate_links_p(n, snapshots, ["battery discharger"])
+        aggregate_links_p(n, snapshots, day_techs)
+
+    # Aggregate night time operations.
+    start, end = times['night_start'], times['night_end']
+    night_bins = night_snapshot_bins(n, start, end)
+    night_techs = time_agg_config['aggregate_night']
+    # TODO: need to add all constrainsts in one go.
+    for snapshots in night_bins.values():
+        aggregate_links_p(n, snapshots, night_techs)
 
 
 def uniform_snapshot_bins(n, h):
@@ -410,12 +436,13 @@ def extra_functionality(n, snapshots):
         if "EQ" in o:
             add_EQ_constraints(n, o)
     for o in opts:
-        m = re.match(r'^\d+hstore$', o, re.IGNORECASE)
+        m = re.match(r'^(\d)+hsub$', o, re.IGNORECASE)
         if m is not None:
-            h = int(m.group(0)[:-6])
-            add_store_resolution_constraints(n, h)
+            h = int(m.group(1))
+            add_time_agg_constraints(n, h, config['time_aggregation'])
             break
     add_battery_constraints(n)
+    add_day_night_constraints(n, config['time_aggregation'])
 
 
 def solve_network(n, config, opts='', **kwargs):
