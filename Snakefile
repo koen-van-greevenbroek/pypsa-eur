@@ -13,7 +13,8 @@ if not exists("config.yaml"):
 
 configfile: "config.yaml"
 
-COSTS="data/costs.csv"
+# COSTS="data/costs.csv"
+COSTS="my-costs-battery-optimistic.csv"
 ATLITE_NPROCESSES = config['atlite'].get('nprocesses', 4)
 
 
