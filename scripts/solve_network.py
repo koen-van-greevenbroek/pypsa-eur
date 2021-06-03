@@ -233,9 +233,7 @@ def add_time_agg_constraints(n, h, time_agg_config):
                 {h} hours.")
 
     h_hour_bins = uniform_snapshot_bins(n, h)
-    # TODO: Add all the constraints all in one go.
-    for snapshots in h_hour_bins.values():
-        aggregate_links_p(n, snapshots, techs)
+    aggregate_links_p(n, h_hour_bins, techs)
 
 
 def add_day_night_constraints(n, time_agg_config):
@@ -252,32 +250,35 @@ def add_day_night_constraints(n, time_agg_config):
     times = time_agg_config['time_boundaries']
 
     # Aggregate day time operations.
-    start, end = times['day_start'], times['day_end']
-    day_bins = day_snapshot_bins(n, start, end)
     day_techs = time_agg_config['aggregate_day']
-    # TODO: need to add all constrainsts in one go.
-    for snapshots in day_bins.values():
-        aggregate_links_p(n, snapshots, day_techs)
+    if day_techs:
+        start, end = times['day_start'], times['day_end']
+        day_bins = day_snapshot_bins(n, start, end)
+        aggregate_links_p(n, day_bins, day_techs)
 
     # Aggregate night time operations.
-    start, end = times['night_start'], times['night_end']
-    night_bins = night_snapshot_bins(n, start, end)
     night_techs = time_agg_config['aggregate_night']
-    # TODO: need to add all constrainsts in one go.
-    for snapshots in night_bins.values():
-        aggregate_links_p(n, snapshots, night_techs)
+    if night_techs:
+        start, end = times['night_start'], times['night_end']
+        night_bins = night_snapshot_bins(n, start, end)
+        aggregate_links_p(n, night_bins, night_techs)
 
 
 def uniform_snapshot_bins(n, h):
-    """
-    Divide the snapshots of `n` into `h`-hour intervals, and return a
-    dictionary mapping each `h`-hour interval to a list of the snapshots
-    contained in that interval.
+    """Create uniformly sized intervals of snapshots of a network.
+    
+    Divide all snapshots of `n` into `h`-hour intervals, and return an
+    iterable over those intervals.
 
     Parameters
     ----------
     n : pypsa.Network
     h : int
+
+    Returns
+    -------
+    iterable of pd.Series
+        An iterable of subsets of `n.snapshots`.
     """
     intervals = pd.interval_range(n.snapshots[0] - pd.Timedelta("1 days"),
                                   n.snapshots[-1] + pd.Timedelta("1 days"),
@@ -295,7 +296,7 @@ def uniform_snapshot_bins(n, h):
             current_interval = next(interval_iter)
         bins[current_interval].append(s)
 
-    return bins
+    return bins.values()
 
 
 def night_snapshot_bins(n, night_start='18:00:00', night_end='06:00:00'):
@@ -373,37 +374,49 @@ def day_snapshot_bins(n, day_start='10:00:00', day_end='15:00:00'):
     return bins
 
 
-def aggregate_links_p(n, snapshots, carriers):
-    """
-    For each link in `n` with carrier in `carriers`, aggregate the power p along the link over the given `snapshots`.
+def aggregate_links_p(n, snapshot_collection, carriers):
+    """Aggregate operations of links in a PyPSA network.
+
+    For each link in `n` with carrier in `carriers`, aggregate the
+    power p along the link over the given `snapshot_collection`. In
+    particular, `snapshot_collection` is a list of subsets of
+    `n.snapshots`, and p is aggregated over each subset in
+    `snapshot_collection` individually.
     
     Specifically, we add
         p_{i+1} - p_{i} = 0
-    as a constraint for all i in `snapshots`.
+    as a constraint for all i in each subsets of `snapshots`.
 
     Parameters
     ----------
     n : pypsa.Network
-    snapshots : pd.Series
-        a subset of `n.snapshots`.
+    snapshot_collection : List[pd.Series]
+        a list of subsets of `n.snapshots`.
     carrier : iterable
         a subset of `n.carriers`.
+
     """
     # Get the index of all links with the given carrier.
     store_link_i = n.links.loc[n.links['carrier'].isin(carriers)].index
-    # Get the power time series variables for the above links. 'p' is
-    # a Dataframe indexed over snapshots, with the relevant links as
-    # columns.
-    p = get_var(n, 'Link', 'p').loc[snapshots, store_link_i]
-    # Create a table of 1-term linear expressions of all except the
-    # first row of 'p'.
-    lhs, *axes = linexpr((1, p.loc[snapshots[1:]]), return_axes=True)
-    # Subtract from each entry in 'lhs' the variable "above" (one
-    # snapshot before) it. This is achieved by 'shift()'ing the values
-    # in the dataframe 'p'.
-    lhs += linexpr((-1, p.shift().loc[snapshots[1:]]))\
-        .reindex(index=axes[0], columns=axes[1]).values
-    # Now we can define the constraint.
+
+    # Prepare the constraint, then add terms to the constraint for
+    # each given subset of snapshots.
+    lhs = linexpr()
+    for snapshots in snapshot_collection:
+        # Get the power time series variables for the above links. 'p' is
+        # a Dataframe indexed over snapshots, with the relevant links as
+        # columns.
+        p = get_var(n, 'Link', 'p').loc[snapshots, store_link_i]
+        # Create a table of 1-term linear expressions of all except the
+        # first row of 'p'.
+        lhs_a, *axes = linexpr((1, p.loc[snapshots[1:]]), return_axes=True)
+        # Subtract from each entry in 'lhs' the variable "above" (one
+        # snapshot before) it. This is achieved by 'shift()'ing the values
+        # in the dataframe 'p'.
+        lhs_b += linexpr((-1, p.shift().loc[snapshots[1:]]))\
+            .reindex(index=axes[0], columns=axes[1]).values
+        lhs += lhs_a + lhs_b
+
     define_constraints(n, lhs, "=", 0, 'Link', 'aggregation')
 
 
